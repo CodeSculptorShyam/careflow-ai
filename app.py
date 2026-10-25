@@ -71,43 +71,63 @@ def update_followup_status(task_id, status):
     with get_connection() as conn:
         conn.execute("UPDATE followups SET status = ? WHERE id = ?", (status, task_id))
 
+
+@st.cache_resource
+def get_gemini_client(api_key):
+    from google import genai
+    from google.genai import types
+
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=12000)
+    )
+
+
 def generate_reminder(appt, style):
-    """Use Gemini if configured; otherwise provide a clearly labelled local template."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    prompt = (
-        "Write a short, polite healthcare administrative appointment reminder. "
-        "Do not provide medical advice, diagnosis, or treatment suggestions. "
-        "Do not include a patient's name or sensitive details. "
-        f"Appointment date: {appt['appointment_date']}. "
-        f"Appointment time: {appt['appointment_time']}. "
-        f"Appointment type: {appt['appointment_type']}. "
-        f"Message style: {style}. "
-        "Include a brief instruction to contact the clinic if the appointment needs changing."
+
+    fallback = (
+        f"Hello, this is a reminder of your "
+        f"{appt['appointment_type']} appointment on "
+        f"{appt['appointment_date']} at {appt['appointment_time']}. "
+        "Please contact the clinic if you need to make a change."
     )
-    if api_key:
-        try:
-            from google import genai
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=prompt
+
+    if not api_key:
+        return fallback, "Template mode"
+
+    try:
+        from google.genai import types
+
+        prompt = (
+            "Write a short, polite healthcare appointment reminder. "
+            "Use only these details. Do not give medical advice. "
+            "Return only the reminder message. "
+            f"Date: {appt['appointment_date']}. "
+            f"Time: {appt['appointment_time']}. "
+            f"Type: {appt['appointment_type']}. "
+            f"Tone: {style}."
+        )
+
+        client = get_gemini_client(api_key)
+
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=100,
+                temperature=0.2
             )
-            if response.text:
-                return response.text.strip(), "Generated with Gemini AI"
-        except Exception as exc:
-            return (
-                f"Hello, this is a reminder of your {appt['appointment_type']} appointment "
-                f"on {appt['appointment_date']} at {appt['appointment_time']}. "
-                "Please contact the clinic if you need to make a change.\n\n"
-                f"AI service was unavailable ({type(exc).__name__}); a fallback template is shown.",
-                "Fallback template (AI request failed)"
-            )
-    return (
-        f"Hello, this is a reminder of your {appt['appointment_type']} appointment "
-        f"on {appt['appointment_date']} at {appt['appointment_time']}. "
-        "Please contact the clinic if you need to make a change.",
-        "Template mode — add GEMINI_API_KEY to enable AI generation"
-    )
+        )
+
+        if response.text:
+            return response.text.strip(), "Generated with Gemini AI"
+
+        return fallback, "Fallback template"
+
+    except Exception:
+        return fallback, "AI unavailable; fallback template shown"
+
 
 init_db()
 
@@ -175,9 +195,10 @@ with tab2:
         selected_label = st.selectbox("Choose an appointment", list(labels.keys()))
         style = st.selectbox("Tone", ["Warm and friendly", "Professional and concise", "Simple English"])
         if st.button("Generate reminder", type="primary"):
-            message, source = generate_reminder(labels[selected_label], style)
-            st.session_state["last_reminder"] = message
-            st.session_state["last_reminder_source"] = source
+            with st.spinner("Generating your reminder..."):
+                message, source = generate_reminder(
+                    labels[selected_label], style
+        )
         if "last_reminder" in st.session_state:
             st.text_area("Reminder message", st.session_state["last_reminder"], height=150)
             st.caption(st.session_state.get("last_reminder_source", ""))
