@@ -75,12 +75,8 @@ def update_followup_status(task_id, status):
 @st.cache_resource
 def get_gemini_client(api_key):
     from google import genai
-    from google.genai import types
 
-    return genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(timeout=12000)
-    )
+    return genai.Client(api_key=api_key)
 
 
 def generate_reminder(appt, style):
@@ -100,24 +96,33 @@ def generate_reminder(appt, style):
         from google.genai import types
 
         prompt = (
-            "Write a short, polite healthcare appointment reminder. "
-            "Use only these details. Do not give medical advice. "
-            "Return only the reminder message. "
-            f"Date: {appt['appointment_date']}. "
-            f"Time: {appt['appointment_time']}. "
-            f"Type: {appt['appointment_type']}. "
-            f"Tone: {style}."
+            "Write a warm, personalized healthcare appointment reminder. "
+             "Address the patient by their first name. "
+             "Mention the appointment type, date, and time. "
+             "Use natural, friendly English in 2 or 3 short sentences. "
+             "Include a polite instruction to contact the clinic to reschedule. "
+             "End with a kind closing. "
+             "Return only the complete message, without a heading or markdown. "
+             "Do not invent details or provide medical advice. "
+             f"Patient name: {appt['patient_name']}. "
+             f"Appointment type: {appt['appointment_type']}. "
+             f"Date: {appt['appointment_date']}. "
+             f"Time: {appt['appointment_time']}. "
+             f"Tone: {style}."
         )
 
         client = get_gemini_client(api_key)
 
         response = client.models.generate_content(
-            model="gemini-3.8-flash",
+            model="gemini-3.5-flash-lite",
             contents=prompt,
             config=types.GenerateContentConfig(
-                max_output_tokens=100,
-                temperature=0.2
+                max_output_tokens=256,
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="low"
+                )
             )
+            
         )
 
         if response.text:
@@ -125,8 +130,8 @@ def generate_reminder(appt, style):
 
         return fallback, "Fallback template"
 
-    except Exception:
-        return fallback, "AI unavailable; fallback template shown"
+    except Exception as e:
+        return fallback, f"AI error: {type(e).__name__}: {e}"
 
 
 init_db()
@@ -198,7 +203,13 @@ with tab2:
             with st.spinner("Generating your reminder..."):
                 message, source = generate_reminder(
                     labels[selected_label], style
-        )
+                )
+            st.success(f"Reminder source: {source}")
+            st.text_area(
+                "Generated appointment reminder",
+                value=message,
+                height=120
+            )
         if "last_reminder" in st.session_state:
             st.text_area("Reminder message", st.session_state["last_reminder"], height=150)
             st.caption(st.session_state.get("last_reminder_source", ""))
